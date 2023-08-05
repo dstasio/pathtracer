@@ -17,10 +17,6 @@ main :: () {
     // format: 0xAARRGGBB
     backbuffer := NewArray(WINDOW_WIDTH * WINDOW_HEIGHT, u32);
 
-    for *pixel: backbuffer {
-        pixel.* = 0xFF002FDF;
-    }
-
        last_t := current_time_monotonic();
     current_t := last_t;
     dt_acc    : float64;
@@ -28,6 +24,8 @@ main :: () {
     FRAME_AVERAGE_AMOUNT :: 200;
     INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
 
+    offs : u32;
+    offs_delta := 1;
     quit := false;
     while !quit {
         update_window_events();
@@ -44,6 +42,23 @@ main :: () {
             }
         }
 
+        x : u32;
+        y : u32;
+        for *pixel: backbuffer {
+            mx : u32 = x % 50 + offs;
+            my : u32 = y % 50 + offs;
+
+            pixel.* = xx (mx << 8 | my);
+
+            x += 1;
+            if x == WINDOW_WIDTH {
+                y += 1;
+                x  = 0;
+            }
+        }
+        offs = xx (offs + offs_delta);
+
+
         StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                                  0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                       backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
@@ -55,6 +70,7 @@ main :: () {
         last_t    = current_t;
 
         if frame_count >= FRAME_AVERAGE_AMOUNT {
+            offs_delta *= -1;
             frame_count = 0;
             dt_acc *= INV_FRAME_AVERAGE;
             print("Average frame time: %;  FPS: %\n", dt_acc, 1.0 / cast(float)dt_acc);
