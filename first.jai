@@ -1,3 +1,4 @@
+TIME :: 1;
 
 main :: () {
     #assert(OS == .WINDOWS);
@@ -17,15 +18,56 @@ main :: () {
     // format: 0xAARRGGBB
     backbuffer := NewArray(WINDOW_WIDTH * WINDOW_HEIGHT, u32);
 
+    Sphere :: struct {
+        center: Vector3;
+        radius: float = 50;
+    };
+
+    Ray :: struct {
+        origin: Vector3;
+        dir   : Vector3;
+    };
+
+    sphere : Sphere;
+
+    ray_to_sphere :: (r: Ray, s: Sphere) -> hit: bool, p: Vector3 = .{}, n: Vector3 = .{} {
+        assert(!is_approximately_zero(length_squared(r.dir)));
+
+        co := r.origin - s.center;
+
+        b := dot(r.dir, co);
+        discriminant := b*b - (length_squared(co) - (s.radius * s.radius));
+
+	if discriminant < 0 {
+            return false;
+	}
+
+        d0 := -b;
+        if !is_approximately_zero(discriminant) {
+            discriminant = sqrt(discriminant);
+            d0 -= discriminant;
+            //d1 := -b + discriminant;
+        }
+
+        p0 := r.origin + r.dir * d0;
+        normal := p0 - s.center;
+        normalize(*normal);
+
+        return true, p0, normal;
+    }
+
+    camera_pos  : Vector3;
+    CAMERA_SIZE : float : 100;
+
+    #if TIME {
        last_t := current_time_monotonic();
     current_t := last_t;
     dt_acc    : float64;
     frame_count := 0;
-    FRAME_AVERAGE_AMOUNT :: 200;
+    FRAME_AVERAGE_AMOUNT :: 50;
     INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
+    }
 
-    offs : u32;
-    offs_delta := 1;
     quit := false;
     while !quit {
         update_window_events();
@@ -42,27 +84,47 @@ main :: () {
             }
         }
 
+        for *pixel: backbuffer  pixel.* = 0xcdcdcd;
+
+        // ===========
+
         x : u32;
         y : u32;
         for *pixel: backbuffer {
-            mx : u32 = x % 50 + offs;
-            my : u32 = y % 50 + offs;
+            defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
-            pixel.* = xx (mx << 8 | my);
+            fx := cast(float)x;
+            fy := cast(float)y;
 
-            x += 1;
-            if x == WINDOW_WIDTH {
-                y += 1;
-                x  = 0;
+            fx -= 0.5*WINDOW_WIDTH;
+            fy -= 0.5*WINDOW_HEIGHT;
+
+            fx *= CAMERA_SIZE / WINDOW_HEIGHT;
+            fy *= CAMERA_SIZE / WINDOW_HEIGHT;
+
+            LOOK_DIR :: Vector3.{1, 0, 0};
+            look := Ray.{
+                origin = .{0, fx, fy},
+                dir    = LOOK_DIR,
+            };
+
+            hit, hitp, hitn := ray_to_sphere(look, sphere);
+            if hit {
+                r : u32 = cast(u8) (255 * (hitn.x + 1) * 0.5);
+                g : u32 = cast(u8) (255 * (hitn.y + 1) * 0.5);
+                b : u32 = cast(u8) (255 * (hitn.z + 1) * 0.5);
+
+                pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
-        offs = xx (offs + offs_delta);
 
 
+        // ===========
         StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                                  0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                       backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
 
+        #if TIME {
         frame_count += 1;
 
         current_t = current_time_monotonic();
@@ -70,11 +132,11 @@ main :: () {
         last_t    = current_t;
 
         if frame_count >= FRAME_AVERAGE_AMOUNT {
-            offs_delta *= -1;
             frame_count = 0;
             dt_acc *= INV_FRAME_AVERAGE;
             print("Average frame time: %;  FPS: %\n", dt_acc, 1.0 / cast(float)dt_acc);
             dt_acc = 0;
+        }
         }
     }
 }
@@ -83,6 +145,8 @@ main :: () {
 #import "Windows";
 #import "Window_Creation";
 #import "Input";
+#import "Math";
+#import "Sloppy_Math";
 
 WINDOW_WIDTH  :: 1280;
 WINDOW_HEIGHT :: 720;
