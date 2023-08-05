@@ -51,7 +51,7 @@ main :: () {
 
         p0 := r.origin + r.dir * d0;
         normal := p0 - s.center;
-        normalize(*normal);
+        normal /= s.radius;
 
         return true, p0, normal;
     }
@@ -84,7 +84,7 @@ main :: () {
             }
         }
 
-        for *pixel: backbuffer  pixel.* = 0xcdcdcd;
+        memset(backbuffer.data, 0xcd, size_of(u32) * backbuffer.count);
 
         // ===========
 
