@@ -18,23 +18,39 @@ main :: () {
     // format: 0xAARRGGBB
     backbuffer := NewArray(WINDOW_WIDTH * WINDOW_HEIGHT, u32);
 
+    Material_Type :: enum u8 {
+        EMISSIVE;
+        DIFFUSE;
+    }
+
+    Material :: struct {
+        type     : Material_Type;
+        color    : Vector3;
+        specular : bool;
+    }
+    materials :: Material.[
+        .{ .EMISSIVE, .{0.85, 0.86, 0.9}, false },
+        .{ . DIFFUSE, .{0.85, 0.33, 0.2}, true  },
+        .{ . DIFFUSE, .{0.28, 0.67, 0.9}, false },
+    ];
+
     Sphere :: struct {
-        center: Vector3;
-        color : Vector3;
-        radius: float = 50;
-    };
+        center         : Vector3;
+        radius         : float = 50;
+        material_index : int;
+    }
 
     Ray :: struct {
         origin: Vector3;
         dir   : Vector3;
-    };
+    }
 
     spheres := Sphere.[
-        .{.{   0, 100, 0 }, .{0.85, 0.33, 0.2}, 50 },
-        .{.{ -70,  80, 0 }, .{0.28, 0.67, 0.9}, 30 },
+        .{.{   0, 100, 0 }, 50, 1 },
+        .{.{ -70,  80, 0 }, 30, 2 },
     ];
 
-    light_dir :: #run normalize(Vector3.{-0.3, 1, -0.7});
+    light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
 
     ray_to_sphere :: (r: Ray, s: Sphere) -> hit: bool, dist: float = -1 {
         assert(!is_approximately_zero(length_squared(r.dir)));
@@ -59,6 +75,23 @@ main :: () {
             return false, d;
 
         return true, d;
+    }
+
+    raycast :: (r: Ray) -> hit_sphere: *Sphere, dist: float #expand {
+        least_dist := max_of_type(float);
+        hit_sphere : *Sphere;
+        for *`spheres {
+            hit, dist := ray_to_sphere(r, it.*);
+
+            if !hit continue;
+
+            if dist < least_dist {
+                least_dist = dist;
+                hit_sphere = it;
+            }
+        }
+
+        return hit_sphere, least_dist;
     }
 
     camera_pos  : Vector3;
@@ -98,6 +131,11 @@ main :: () {
         for *pixel: backbuffer {
             defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
+            SAMPLE_COUNT :: 1;
+            SAMPLE_CONTRIB :: 1.0 / cast(float)SAMPLE_COUNT;
+
+            pixel_color : Vector3;
+
             fx := cast(float)x;
             fy := cast(float)y;
 
@@ -108,44 +146,58 @@ main :: () {
             fy *= CAMERA_SIZE / WINDOW_HEIGHT;
 
             LOOK_DIR :: Vector3.{0, 1, 0};
-            look := Ray.{
-                origin = .{fx, 0, fy},
-                dir    = LOOK_DIR,
-                //dir    = normalize(.{fx, 70, fy}),
-            };
 
-            least_dist := max_of_type(float);
-            hit_sphere : *Sphere;
-            for *spheres {
-                hit, dist := ray_to_sphere(look, it.*);
+            for 0..SAMPLE_COUNT-1 {
+                ray             := Ray.{ origin = .{fx, 0, fy}, dir = LOOK_DIR, };
+                reflected_color :  Vector3;
+                attenuation     := Vector3.{1, 1, 1};
 
-                if !hit continue;
+                MAX_BOUNCES :: 10;
+                bounces := 0;
+                while true {
+                    defer bounces += 1;
 
-                if dist < least_dist {
-                    least_dist = dist;
-                    hit_sphere = it;
+                    if bounces >= MAX_BOUNCES  break;
+
+                    hit_sphere, hit_dist := raycast(ray);
+
+                    hit_material := *materials[ifx hit_sphere then hit_sphere.material_index else 0];
+
+                    if hit_material.type == {
+                        case .EMISSIVE; reflected_color += attenuation * hit_material.color;
+                        case .DIFFUSE;  attenuation      = attenuation * hit_material.color;
+                    }
+
+                    if !hit_sphere break;
+
+                    hit_pos    := ray.origin + ray.dir * hit_dist;
+                    hit_normal := hit_pos - hit_sphere.center;
+                    hit_normal /= hit_sphere.radius;
+
+                    ray.origin = hit_pos;
+
+                    rand_x := random_get_zero_to_one() * 2 - 1;
+                    rand_y := random_get_zero_to_one() * 2 - 1;
+                    rand_z := random_get_zero_to_one() * 2 - 1;
+
+                    if hit_material.specular {
+                        specular_bounce := ray.dir - 2 * hit_normal * dot(ray.dir, hit_normal);
+                        ray.dir = specular_bounce;
+                    } else {
+                        scattered_bounce := normalize(hit_normal + .{rand_x, rand_y, rand_z});
+                        ray.dir = scattered_bounce;
+                    }
+
                 }
+
+                pixel_color += reflected_color * SAMPLE_CONTRIB;
             }
 
+            r : u32 = cast(u8) (255 * pixel_color.x);
+            g : u32 = cast(u8) (255 * pixel_color.y);
+            b : u32 = cast(u8) (255 * pixel_color.z);
 
-            if hit_sphere {
-                hit_pos    := look.origin + look.dir * least_dist;
-                hit_normal := hit_pos - hit_sphere.center;
-                hit_normal /= hit_sphere.radius;
-
-                //r : u32 = cast(u8) (255 * (hit_normal.x + 1) * 0.5);
-                //g : u32 = cast(u8) (255 * (hit_normal.y + 1) * 0.5);
-                //b : u32 = cast(u8) (255 * (hit_normal.z + 1) * 0.5);
-
-                color := hit_sphere.color;
-                color *= clamp(dot(hit_normal, -light_dir), 0, 1);
-
-                r : u32 = cast(u8) (255 * color.x);
-                g : u32 = cast(u8) (255 * color.y);
-                b : u32 = cast(u8) (255 * color.z);
-
-                pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
+            pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
         }
 
 
@@ -177,9 +229,11 @@ main :: () {
 #import "Input";
 #import "Math";
 #import "Sloppy_Math";
+#import "Random";
 
-WINDOW_WIDTH  :: 1280;
-WINDOW_HEIGHT :: 720;
+SCALE :: 1;
+WINDOW_WIDTH  :: 640 * SCALE;
+WINDOW_HEIGHT :: 360 * SCALE;
 the_window: Window_Type;
 
 #scope_file
