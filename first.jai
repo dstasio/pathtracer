@@ -20,6 +20,7 @@ main :: () {
 
     Sphere :: struct {
         center: Vector3;
+        color : Vector3;
         radius: float = 50;
     };
 
@@ -28,9 +29,14 @@ main :: () {
         dir   : Vector3;
     };
 
-    sphere : Sphere;
+    spheres := Sphere.[
+        .{.{   0, 100, 0 }, .{0.85, 0.33, 0.2}, 50 },
+        .{.{ -70,  80, 0 }, .{0.28, 0.67, 0.9}, 30 },
+    ];
 
-    ray_to_sphere :: (r: Ray, s: Sphere) -> hit: bool, p: Vector3 = .{}, n: Vector3 = .{} {
+    light_dir :: #run normalize(Vector3.{-0.3, 1, -0.7});
+
+    ray_to_sphere :: (r: Ray, s: Sphere) -> hit: bool, dist: float = -1 {
         assert(!is_approximately_zero(length_squared(r.dir)));
 
         co := r.origin - s.center;
@@ -42,18 +48,17 @@ main :: () {
             return false;
 	}
 
-        d0 := -b;
+        d := -b;
         if !is_approximately_zero(discriminant) {
             discriminant = sqrt(discriminant);
-            d0 -= discriminant;
+            d -= discriminant;
             //d1 := -b + discriminant;
         }
 
-        p0 := r.origin + r.dir * d0;
-        normal := p0 - s.center;
-        normal /= s.radius;
+        if d < 0
+            return false, d;
 
-        return true, p0, normal;
+        return true, d;
     }
 
     camera_pos  : Vector3;
@@ -64,7 +69,7 @@ main :: () {
     current_t := last_t;
     dt_acc    : float64;
     frame_count := 0;
-    FRAME_AVERAGE_AMOUNT :: 50;
+    FRAME_AVERAGE_AMOUNT :: 20;
     INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
     }
 
@@ -102,17 +107,42 @@ main :: () {
             fx *= CAMERA_SIZE / WINDOW_HEIGHT;
             fy *= CAMERA_SIZE / WINDOW_HEIGHT;
 
-            LOOK_DIR :: Vector3.{1, 0, 0};
+            LOOK_DIR :: Vector3.{0, 1, 0};
             look := Ray.{
-                origin = .{0, fx, fy},
+                origin = .{fx, 0, fy},
                 dir    = LOOK_DIR,
+                //dir    = normalize(.{fx, 70, fy}),
             };
 
-            hit, hitp, hitn := ray_to_sphere(look, sphere);
-            if hit {
-                r : u32 = cast(u8) (255 * (hitn.x + 1) * 0.5);
-                g : u32 = cast(u8) (255 * (hitn.y + 1) * 0.5);
-                b : u32 = cast(u8) (255 * (hitn.z + 1) * 0.5);
+            least_dist := max_of_type(float);
+            hit_sphere : *Sphere;
+            for *spheres {
+                hit, dist := ray_to_sphere(look, it.*);
+
+                if !hit continue;
+
+                if dist < least_dist {
+                    least_dist = dist;
+                    hit_sphere = it;
+                }
+            }
+
+
+            if hit_sphere {
+                hit_pos    := look.origin + look.dir * least_dist;
+                hit_normal := hit_pos - hit_sphere.center;
+                hit_normal /= hit_sphere.radius;
+
+                //r : u32 = cast(u8) (255 * (hit_normal.x + 1) * 0.5);
+                //g : u32 = cast(u8) (255 * (hit_normal.y + 1) * 0.5);
+                //b : u32 = cast(u8) (255 * (hit_normal.z + 1) * 0.5);
+
+                color := hit_sphere.color;
+                color *= clamp(dot(hit_normal, -light_dir), 0, 1);
+
+                r : u32 = cast(u8) (255 * color.x);
+                g : u32 = cast(u8) (255 * color.y);
+                b : u32 = cast(u8) (255 * color.z);
 
                 pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
