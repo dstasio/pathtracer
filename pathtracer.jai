@@ -161,18 +161,21 @@ main :: () {
 
                     hit_sphere, hit_dist := raycast(ray);
 
-                    hit_material := *materials[ifx hit_sphere then hit_sphere.material_index else 0];
-
-                    if hit_material.type == {
-                        case .EMISSIVE; reflected_color += attenuation * hit_material.color;
-                        case .DIFFUSE;  attenuation      = attenuation * hit_material.color;
+                    if !hit_sphere {
+                        reflected_color += attenuation * materials[0].color;
+                        break;
                     }
-
-                    if !hit_sphere break;
 
                     hit_pos    := ray.origin + ray.dir * hit_dist;
                     hit_normal := hit_pos - hit_sphere.center;
                     hit_normal /= hit_sphere.radius;
+
+                    hit_material := *materials[hit_sphere.material_index];
+
+                    if hit_material.type == {
+                        case .EMISSIVE; reflected_color += attenuation * hit_material.color;
+                        case .DIFFUSE;  attenuation      = attenuation * hit_material.color * max(0.0, dot(-ray.dir, hit_normal));
+                    }
 
                     ray.origin = hit_pos;
 
