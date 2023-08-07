@@ -29,14 +29,33 @@ main :: () {
         specular : bool;
     }
     materials :: Material.[
-        .{ .EMISSIVE, .{0.85, 0.86, 0.9}, false },
-        .{ . DIFFUSE, .{0.85, 0.33, 0.2}, true  },
-        .{ . DIFFUSE, .{0.28, 0.67, 0.9}, false },
+        .{ .EMISSIVE, .{0.85, 0.86, 0.90}, false },
+        .{ . DIFFUSE, .{0.85, 0.33, 0.20}, true  },
+        .{ . DIFFUSE, .{0.28, 0.67, 0.90}, false },
+        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false },
     ];
 
     Sphere :: struct {
         center         : Vector3;
-        radius         : float = 50;
+        radius         : float;
+    }
+
+    Plane :: struct {
+        normal         : Vector3;
+        distance       : float;
+    }
+
+    Entity :: struct {
+        type: enum {
+            SPHERE;
+            PLANE;
+        };
+
+        union {
+            sphere: Sphere;
+            plane : Plane = ---;
+        }
+
         material_index : int;
     }
 
@@ -45,56 +64,59 @@ main :: () {
         dir   : Vector3;
     }
 
-    spheres := Sphere.[
-        .{.{   0, 100, 0 }, 50, 1 },
-        .{.{ -70,  80, 0 }, 30, 2 },
+    entities := Entity.[
+        .{ type = .SPHERE, sphere = .{ .{   0, 100,  0 }, 50}, material_index = 1 },
+        .{ type = .SPHERE, sphere = .{ .{ -70,  80, 20 }, 30}, material_index = 2 },
+        .{ type = .SPHERE, sphere = .{ .{  70,  50, 50 }, 10}, material_index = 1 },
+        .{ type = . PLANE,  plane = .{ .{   0,   0,  1 },  0}, material_index = 3 },
     ];
 
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
 
-    ray_to_sphere :: (r: Ray, s: Sphere) -> hit: bool, dist: float = -1 {
-        assert(!is_approximately_zero(length_squared(r.dir)));
+    ray_to_entity :: (r: Ray, e: Entity)
+    -> hit: bool, dist: float = -1, impact: Vector3 = .{}, normal: Vector3 = .{} {
+        if e.type == {
+            case .SPHERE;
+                s := *e.sphere;
+                assert(!is_approximately_zero(length_squared(r.dir)));
 
-        co := r.origin - s.center;
+                co := r.origin - s.center;
 
-        b := dot(r.dir, co);
-        discriminant := b*b - (length_squared(co) - (s.radius * s.radius));
+                b := dot(r.dir, co);
+                discriminant := b*b - (length_squared(co) - (s.radius * s.radius));
 
-	if discriminant < 0 {
-            return false;
-	}
+                if discriminant < 0 {
+                    return false;
+                }
 
-        d := -b;
-        if !is_approximately_zero(discriminant) {
-            discriminant = sqrt(discriminant);
-            d -= discriminant;
-            //d1 := -b + discriminant;
+                dist := -b;
+                if !is_approximately_zero(discriminant) {
+                    discriminant = sqrt(discriminant);
+                    dist -= discriminant;
+                }
+
+                impact := r.origin + r.dir * dist;
+                return dist >= 0, dist, impact, (impact - s.center) / s.radius;
+
+            case .PLANE;
+                p := *e.plane;
+
+                denom             := dot(r.dir, p.normal);
+                if is_approximately_zero(denom) return false;
+
+                relative_distance := p.distance - dot(r.origin, p.normal);
+
+                dist   := relative_distance / denom;
+                impact := r.origin + r.dir * dist;
+                return dist >= 0.05, dist, impact, p.normal;
         }
 
-        if d < 0
-            return false, d;
-
-        return true, d;
+        return false;
     }
 
-    raycast :: (r: Ray) -> hit_sphere: *Sphere, dist: float #expand {
-        least_dist := max_of_type(float);
-        hit_sphere : *Sphere;
-        for *`spheres {
-            hit, dist := ray_to_sphere(r, it.*);
-
-            if !hit continue;
-
-            if dist < least_dist {
-                least_dist = dist;
-                hit_sphere = it;
-            }
-        }
-
-        return hit_sphere, least_dist;
+    raycast :: (r: Ray) -> hit_entity: *Entity, dist: float, impact: Vector3, normal: Vector3 #expand {
     }
 
-    camera_pos  : Vector3;
     CAMERA_SIZE : float : 100;
 
     #if TIME {
@@ -131,7 +153,7 @@ main :: () {
         for *pixel: backbuffer {
             defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
-            SAMPLE_COUNT :: 1;
+            SAMPLE_COUNT :: 16;
             SAMPLE_CONTRIB :: 1.0 / cast(float)SAMPLE_COUNT;
 
             pixel_color : Vector3;
@@ -145,10 +167,13 @@ main :: () {
             fx *= CAMERA_SIZE / WINDOW_HEIGHT;
             fy *= CAMERA_SIZE / WINDOW_HEIGHT;
 
-            LOOK_DIR :: Vector3.{0, 1, 0};
+            camera_center  :: Vector3.{0, -100, 100};
+            camera_forward :: #run normalize(Vector3.{0, 100, 0} - camera_center);
+            camera_right   :: #run cross(camera_forward, Vector3.{0, 0, 1});
+            camera_up      :: #run cross(camera_\ right, camera_forward);
 
             for 0..SAMPLE_COUNT-1 {
-                ray             := Ray.{ origin = .{fx, 0, fy}, dir = LOOK_DIR, };
+                ray             := Ray.{ origin = camera_center + fx * camera_right + fy * camera_up, dir = camera_forward, };
                 reflected_color :  Vector3;
                 attenuation     := Vector3.{1, 1, 1};
 
@@ -159,25 +184,37 @@ main :: () {
 
                     if bounces >= MAX_BOUNCES  break;
 
-                    hit_sphere, hit_dist := raycast(ray);
+                    hit_dist   := max_of_type(float);
+                    hit_entity : *Entity;
+                    hit_impact : Vector3 = ---;
+                    hit_normal : Vector3 = ---;
 
-                    if !hit_sphere {
+                    for *entities {
+                        hit, dist, impact, normal := ray_to_entity(ray, it.*);
+
+                        if !hit continue;
+
+                        if dist < hit_dist {
+                            hit_dist   = dist;
+                            hit_entity = it;
+                            hit_impact = impact;
+                            hit_normal = normal;
+                        }
+                    }
+
+                    if !hit_entity {
                         reflected_color += attenuation * materials[0].color;
                         break;
                     }
 
-                    hit_pos    := ray.origin + ray.dir * hit_dist;
-                    hit_normal := hit_pos - hit_sphere.center;
-                    hit_normal /= hit_sphere.radius;
-
-                    hit_material := *materials[hit_sphere.material_index];
+                    hit_material := *materials[hit_entity.material_index];
 
                     if hit_material.type == {
                         case .EMISSIVE; reflected_color += attenuation * hit_material.color;
                         case .DIFFUSE;  attenuation      = attenuation * hit_material.color * max(0.0, dot(-ray.dir, hit_normal));
                     }
 
-                    ray.origin = hit_pos;
+                    ray.origin = hit_impact;
 
                     rand_x := random_get_zero_to_one() * 2 - 1;
                     rand_y := random_get_zero_to_one() * 2 - 1;
@@ -195,6 +232,20 @@ main :: () {
 
                 pixel_color += reflected_color * SAMPLE_CONTRIB;
             }
+
+            linear_to_srgb :: (l: float) -> float #expand {
+                if l < 0 return 0;
+                if l > 1 return 1;
+
+                s := l * 12.92;
+                if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+
+                return s;
+            }
+
+            pixel_color.x = linear_to_srgb(pixel_color.x);
+            pixel_color.y = linear_to_srgb(pixel_color.y);
+            pixel_color.z = linear_to_srgb(pixel_color.z);
 
             r : u32 = cast(u8) (255 * pixel_color.x);
             g : u32 = cast(u8) (255 * pixel_color.y);
