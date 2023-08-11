@@ -1,4 +1,4 @@
-TIME :: 0;
+TIME :: 1;
 
 main :: () {
     #assert(OS == .WINDOWS);
@@ -118,21 +118,21 @@ main :: () {
         return false;
     }
 
-    raycast :: (r: Ray) -> hit_entity: *Entity, dist: float, impact: Vector3, normal: Vector3 #expand {
-    }
-
-    CAMERA_SIZE : float : 100;
+    CAMERA_ZOOM : float : 1.5;
 
     #if TIME {
        last_t := current_time_monotonic();
        current_t := last_t;
        dt_acc    : float64;
        frame_count := 0;
-       FRAME_AVERAGE_AMOUNT :: 20;
+       FRAME_AVERAGE_AMOUNT :: 10;
        INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
     }
 
-    sample_count := 0;
+    sample_count      := 0;
+
+    NUMBER_OF_SAMPLES_BETWEEN_RENDERS :: 10;
+    frame_display_countdown := 1;
 
     quit := false;
     while !quit {
@@ -167,15 +167,15 @@ main :: () {
             fx -= 0.5*WINDOW_WIDTH;
             fy -= 0.5*WINDOW_HEIGHT;
 
-            fx *= CAMERA_SIZE / WINDOW_HEIGHT;
-            fy *= CAMERA_SIZE / WINDOW_HEIGHT;
+            fx /= WINDOW_HEIGHT;
+            fy /= WINDOW_HEIGHT;
 
             camera_center  :: Vector3.{0, -100, 100};
             camera_forward :: #run normalize(Vector3.{0, 100, 0} - camera_center);
             camera_right   :: #run normalize(cross(camera_forward, Vector3.{0, 0, 1}));
             camera_up      :: #run normalize(cross(camera_\ right, camera_forward));
 
-            deprojected_pixel := camera_center + fx * camera_right + fy * camera_up + camera_forward * 170;
+            deprojected_pixel := camera_center + fx * camera_right + fy * camera_up + camera_forward * CAMERA_ZOOM;
             look_dir := normalize(deprojected_pixel - camera_center);
 
             ray             := Ray.{ origin = camera_center, dir = look_dir, };
@@ -243,39 +243,45 @@ main :: () {
             interm_pixel.* += reflected_color;
         }
 
-        interm_pixel := interm_buffer.data;
-        for *pixel: backbuffer {
-            defer interm_pixel += 1;
+        frame_display_countdown -= 1;
 
-            linear_to_srgb :: (l: float) -> float #expand {
-                if l < 0 return 0;
-                if l > 1 return 1;
+        if frame_display_countdown == 0 {
+            frame_display_countdown = NUMBER_OF_SAMPLES_BETWEEN_RENDERS;
 
-                s := l * 12.92;
-                if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+            interm_pixel := interm_buffer.data;
+            for *pixel: backbuffer {
+                defer interm_pixel += 1;
 
-                return s;
+                linear_to_srgb :: (l: float) -> float #expand {
+                    if l < 0 return 0;
+                    if l > 1 return 1;
+
+                    s := l * 12.92;
+                    if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+
+                    return s;
+                }
+
+                srgb_pixel : Vector3 = ---;
+
+                denom := 1.0 / cast(float)sample_count;
+                srgb_pixel.x = linear_to_srgb(interm_pixel.x * denom);
+                srgb_pixel.y = linear_to_srgb(interm_pixel.y * denom);
+                srgb_pixel.z = linear_to_srgb(interm_pixel.z * denom);
+
+                r : u32 = cast(u8) (255 * srgb_pixel.x);
+                g : u32 = cast(u8) (255 * srgb_pixel.y);
+                b : u32 = cast(u8) (255 * srgb_pixel.z);
+
+                pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
 
-            srgb_pixel : Vector3 = ---;
 
-            denom := 1.0 / cast(float)sample_count;
-            srgb_pixel.x = linear_to_srgb(interm_pixel.x * denom);
-            srgb_pixel.y = linear_to_srgb(interm_pixel.y * denom);
-            srgb_pixel.z = linear_to_srgb(interm_pixel.z * denom);
-
-            r : u32 = cast(u8) (255 * srgb_pixel.x);
-            g : u32 = cast(u8) (255 * srgb_pixel.y);
-            b : u32 = cast(u8) (255 * srgb_pixel.z);
-
-            pixel.* = 0xFF000000 | (r << 16) | (g << 8) | b;
+            // ===========
+            StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
+                                     0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
+                          backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
         }
-
-
-        // ===========
-        StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
-                                 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
-                      backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
 
         #if TIME {
         frame_count += 1;
