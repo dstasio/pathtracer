@@ -24,15 +24,17 @@ main :: () {
     }
 
     Material :: struct {
-        type     : Material_Type;
-        color    : Vector3;
-        specular : bool;
+        type         : Material_Type;
+        color        : Vector3;
+        specular     : bool;
+        transmissive : bool;
     }
     materials :: Material.[
-        .{ .EMISSIVE, .{0.85, 0.86, 0.90}, false },
-        .{ . DIFFUSE, .{0.85, 0.33, 0.20}, true  },
-        .{ . DIFFUSE, .{0.28, 0.67, 0.90}, false },
-        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false },
+        .{ .EMISSIVE, .{0.85, 0.86, 0.90}, false, false },
+        .{ . DIFFUSE, .{0.85, 0.33, 0.20}, true , false },
+        .{ . DIFFUSE, .{0.28, 0.67, 0.90}, false, false },
+        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false, false },
+        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false, true },
     ];
 
     Sphere :: struct {
@@ -69,6 +71,7 @@ main :: () {
         .{ type = .SPHERE, sphere = .{ .{ -70,  80, 20 }, 30}, material_index = 2 },
         .{ type = .SPHERE, sphere = .{ .{  70,  50, 50 }, 10}, material_index = 1 },
         .{ type = . PLANE,  plane = .{ .{   0,   0,  1 },  0}, material_index = 3 },
+        .{ type = .SPHERE, sphere = .{ .{  50,  30, 50 },  7}, material_index = 4 },
     ];
 
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
@@ -121,11 +124,11 @@ main :: () {
 
     #if TIME {
        last_t := current_time_monotonic();
-    current_t := last_t;
-    dt_acc    : float64;
-    frame_count := 0;
-    FRAME_AVERAGE_AMOUNT :: 20;
-    INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
+       current_t := last_t;
+       dt_acc    : float64;
+       frame_count := 0;
+       FRAME_AVERAGE_AMOUNT :: 20;
+       INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
     }
 
     quit := false;
@@ -169,11 +172,14 @@ main :: () {
 
             camera_center  :: Vector3.{0, -100, 100};
             camera_forward :: #run normalize(Vector3.{0, 100, 0} - camera_center);
-            camera_right   :: #run cross(camera_forward, Vector3.{0, 0, 1});
-            camera_up      :: #run cross(camera_\ right, camera_forward);
+            camera_right   :: #run normalize(cross(camera_forward, Vector3.{0, 0, 1}));
+            camera_up      :: #run normalize(cross(camera_\ right, camera_forward));
+
+            deprojected_pixel := camera_center + fx * camera_right + fy * camera_up + camera_forward * 170;
+            look_dir := normalize(deprojected_pixel - camera_center);
 
             for 0..SAMPLE_COUNT-1 {
-                ray             := Ray.{ origin = camera_center + fx * camera_right + fy * camera_up, dir = camera_forward, };
+                ray             := Ray.{ origin = camera_center, dir = look_dir, };
                 reflected_color :  Vector3;
                 attenuation     := Vector3.{1, 1, 1};
 
@@ -209,12 +215,17 @@ main :: () {
 
                     hit_material := *materials[hit_entity.material_index];
 
+                    ray.origin = hit_impact;
+
+                    //if hit_material.transmissive {
+                        //ray.origin = 
+                        //continue;
+                    //}
+
                     if hit_material.type == {
                         case .EMISSIVE; reflected_color += attenuation * hit_material.color;
                         case .DIFFUSE;  attenuation      = attenuation * hit_material.color * max(0.0, dot(-ray.dir, hit_normal));
                     }
-
-                    ray.origin = hit_impact;
 
                     rand_x := random_get_zero_to_one() * 2 - 1;
                     rand_y := random_get_zero_to_one() * 2 - 1;
