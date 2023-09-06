@@ -48,15 +48,33 @@ main :: () {
         distance       : float;
     }
 
+    Mesh :: struct {
+        origin    :   Vector3;
+        scale     :   float;
+
+        vertices  : []Vector3;
+        normals   : []Vector3;
+        triangles : []Triangle;
+
+        Triangle :: struct {
+            i0 : u32;
+            i1 : u32;
+            i2 : u32;
+            n  : u32;
+        }
+    }
+
     Entity :: struct {
         type: enum {
             SPHERE;
             PLANE;
+            MESH;
         };
 
         union {
-            sphere: Sphere;
-            plane : Plane = ---;
+            sphere: Sphere = ---;
+            plane : Plane  = ---;
+            mesh  : Mesh;
         }
 
         material_index : int;
@@ -67,12 +85,61 @@ main :: () {
         dir   : Vector3;
     }
 
+    S :: 0.5;
+
+    CUBE_NORMALS :: Vector3.[
+    ];
+    cube :: Mesh.{
+        origin = .{50, 70, 10},
+        scale  = 50,
+
+        vertices = .[
+            .{-S, -S, -S}, // 0
+            .{ S, -S, -S}, // 1
+            .{ S,  S, -S}, // 2
+            .{-S,  S, -S}, // 3
+
+            .{-S, -S,  S}, // 4
+            .{ S, -S,  S}, // 5
+            .{ S,  S,  S}, // 6
+            .{-S,  S,  S}, // 7
+        ],
+        normals = .[
+            .{-1,  0,  0}, // 0
+            .{ 1,  0,  0}, // 1
+            .{ 0, -1,  0}, // 2
+            .{ 0,  1,  0}, // 3
+            .{ 0,  0, -1}, // 4
+            .{ 0,  0,  1}, // 5
+        ],
+        triangles = .[
+            .{0, 1, 2,  4}, // Bottom face
+            .{2, 3, 0,  4},
+
+            .{0, 4, 3,  0}, // Left face
+            .{3, 4, 7,  0},
+
+            .{7, 4, 6,  5}, // Top face
+            .{6, 4, 5,  5},
+
+            .{5, 4, 0,  2}, // Front face
+            .{0, 1, 5,  2},
+
+            .{5, 1, 6,  1}, // Right face
+            .{6, 1, 2,  1},
+
+            .{2, 3, 6,  0}, // Left face
+            .{6, 3, 4,  0},
+        ],
+    };
+
     entities := Entity.[
         .{ type = .SPHERE, sphere = .{ .{   0, 100,  0 }, 50}, material_index = 1 },
         .{ type = .SPHERE, sphere = .{ .{ -70,  80, 20 }, 30}, material_index = 2 },
         .{ type = .SPHERE, sphere = .{ .{  70,  50, 50 }, 10}, material_index = 1 },
         .{ type = . PLANE,  plane = .{ .{   0,   0,  1 },  0}, material_index = 3 },
         .{ type = .SPHERE, sphere = .{ .{  50,  30, 50 },  7}, material_index = 4 },
+        .{ type = .  MESH,   mesh =                      cube, material_index = 2 },
     ];
 
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
@@ -113,7 +180,44 @@ main :: () {
                 dist   := relative_distance / denom;
                 impact := r.origin + r.dir * dist;
                 return dist >= 0.05, dist, impact, p.normal;
-        }
+
+            case .MESH;
+                m := *e.mesh;
+
+                hit_found     := false;
+                impact_dist   := max_of_type(float);
+                impact_point  :  Vector3;
+                impact_normal :  Vector3;
+                for m.triangles {
+                    using it;
+
+                    v0 := m.origin + m.scale * m.vertices[i0];
+                    v1 := m.origin + m.scale * m.vertices[i1];
+                    v2 := m.origin + m.scale * m.vertices[i2];
+
+                    p_normal   := m.normals[n];
+                    p_distance := dot(v0, p_normal);
+
+                    denom := dot(r.dir, p_normal);
+                    if denom > -0.01 continue; // we only want to hit triangles that are facing the ray
+
+                    relative_distance := p_distance - dot(r.origin, p_normal);
+
+                    test_dist   := relative_distance / denom;
+                    test_impact := r.origin + r.dir * test_dist;
+                    if test_dist >= 0.02 && test_dist < impact_dist {
+                        if dot(cross(v1 - v0, test_impact - v0), r.dir) > 0 continue;
+                        if dot(cross(v2 - v1, test_impact - v1), r.dir) > 0 continue;
+                        if dot(cross(v0 - v2, test_impact - v2), r.dir) > 0 continue;
+
+                        hit_found     = true;
+                        impact_dist   = test_dist;
+                        impact_point  = test_impact;
+                        impact_normal = p_normal;
+                    }
+                }
+                return hit_found, impact_dist, impact_point, impact_normal;
+            }
 
         return false;
     }
@@ -161,8 +265,8 @@ main :: () {
 
             defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
-            fx := cast(float)x;
-            fy := cast(float)y;
+            fx := cast(float)x + random_get_zero_to_one();
+            fy := cast(float)y + random_get_zero_to_one();
 
             fx -= 0.5*WINDOW_WIDTH;
             fy -= 0.5*WINDOW_HEIGHT;
