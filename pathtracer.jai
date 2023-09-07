@@ -1,4 +1,6 @@
-TIME :: 1;
+SCALE :: 2;
+TIME  :: 1;
+AA    :: 1;
 
 main :: () {
     #assert(OS == .WINDOWS);
@@ -27,15 +29,15 @@ main :: () {
     Material :: struct {
         type         : Material_Type;
         color        : Vector3;
-        specular     : bool;
+        scatter      : float;
         transmissive : bool;
     }
     materials :: Material.[
-        .{ .EMISSIVE, .{0.85, 0.86, 0.90}, false, false },
-        .{ . DIFFUSE, .{0.85, 0.33, 0.20}, true , false },
-        .{ . DIFFUSE, .{0.28, 0.67, 0.90}, false, false },
-        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false, false },
-        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, false, true },
+        .{ .EMISSIVE, .{0.85, 0.86, 0.90}, 1.0, false },
+        .{ . DIFFUSE, .{0.84, 0.94, 0.39}, 0.0, false },
+        .{ . DIFFUSE, .{0.28, 0.67, 0.90}, 1.0, false },
+        .{ . DIFFUSE, .{0.54, 0.94, 0.79}, 0.3, false },
+        .{ . DIFFUSE, .{0.85, 0.33, 0.20}, 0.2, true },
     ];
 
     Sphere :: struct {
@@ -136,7 +138,7 @@ main :: () {
     entities := Entity.[
         .{ type = .SPHERE, sphere = .{ .{   0, 100,  0 }, 50}, material_index = 1 },
         .{ type = .SPHERE, sphere = .{ .{ -70,  80, 20 }, 30}, material_index = 2 },
-        .{ type = .SPHERE, sphere = .{ .{  70,  50, 50 }, 10}, material_index = 1 },
+        .{ type = .SPHERE, sphere = .{ .{  70,  50, 50 }, 10}, material_index = 2 },
         .{ type = . PLANE,  plane = .{ .{   0,   0,  1 },  0}, material_index = 3 },
         .{ type = .SPHERE, sphere = .{ .{  50,  30, 50 },  7}, material_index = 4 },
         .{ type = .  MESH,   mesh =                      cube, material_index = 2 },
@@ -144,8 +146,7 @@ main :: () {
 
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
 
-    ray_to_entity :: (r: Ray, e: Entity)
-    -> hit: bool, dist: float = -1, impact: Vector3 = .{}, normal: Vector3 = .{} {
+    ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vector3 = .{}, normal: Vector3 = .{} {
         if e.type == {
             case .SPHERE;
                 s := *e.sphere;
@@ -235,7 +236,7 @@ main :: () {
 
     sample_count      := 0;
 
-    NUMBER_OF_SAMPLES_BETWEEN_RENDERS :: 10;
+    NUMBER_OF_SAMPLES_BETWEEN_RENDERS :: 2;
     frame_display_countdown := 1;
 
     quit := false;
@@ -255,8 +256,6 @@ main :: () {
             }
         }
 
-        memset(backbuffer.data, 0xcd, size_of(u32) * backbuffer.count);
-
         // ===========
 
         x : u32;
@@ -268,11 +267,13 @@ main :: () {
             fx := cast(float)x + random_get_zero_to_one();
             fy := cast(float)y + random_get_zero_to_one();
 
-            fx -= 0.5*WINDOW_WIDTH;
-            fy -= 0.5*WINDOW_HEIGHT;
+            #if AA {
+                fx += random_get_zero_to_one();
+                fy += random_get_zero_to_one();
+            }
 
-            fx /= WINDOW_HEIGHT;
-            fy /= WINDOW_HEIGHT;
+            fx -= 0.5*WINDOW_WIDTH;  fx /= WINDOW_HEIGHT;
+            fy -= 0.5*WINDOW_HEIGHT; fy /= WINDOW_HEIGHT;
 
             camera_center  :: Vector3.{0, -100, 100};
             camera_forward :: #run normalize(Vector3.{0, 100, 0} - camera_center);
@@ -334,13 +335,10 @@ main :: () {
                 rand_y := random_get_zero_to_one() * 2 - 1;
                 rand_z := random_get_zero_to_one() * 2 - 1;
 
-                if hit_material.specular {
-                    specular_bounce := ray.dir - 2 * hit_normal * dot(ray.dir, hit_normal);
-                    ray.dir = specular_bounce;
-                } else {
-                    scattered_bounce := normalize(hit_normal + .{rand_x, rand_y, rand_z});
-                    ray.dir = scattered_bounce;
-                }
+                specular_bounce := ray.dir - 2 * hit_normal * dot(ray.dir, hit_normal);
+                scattered_bounce := normalize(hit_normal + .{rand_x, rand_y, rand_z});
+
+                ray.dir = lerp(specular_bounce, scattered_bounce, hit_material.scatter);
 
             }
 
@@ -351,6 +349,8 @@ main :: () {
 
         if frame_display_countdown == 0 {
             frame_display_countdown = NUMBER_OF_SAMPLES_BETWEEN_RENDERS;
+
+            memset(backbuffer.data, 0xcd, size_of(u32) * backbuffer.count);
 
             interm_pixel := interm_buffer.data;
             for *pixel: backbuffer {
@@ -412,7 +412,6 @@ main :: () {
 #import "Sloppy_Math";
 #import "Random";
 
-SCALE :: 1;
 WINDOW_WIDTH  :: 640 * SCALE;
 WINDOW_HEIGHT :: 360 * SCALE;
 the_window: Window_Type;
