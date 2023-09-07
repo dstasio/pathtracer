@@ -264,8 +264,8 @@ main :: () {
 
             defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
-            fx := cast(float)x + random_get_zero_to_one();
-            fy := cast(float)y + random_get_zero_to_one();
+            fx := cast(float)x;
+            fy := cast(float)y;
 
             #if AA {
                 fx += random_get_zero_to_one();
