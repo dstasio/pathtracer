@@ -43,31 +43,40 @@ main :: () {
     backbuffer    := NewArray(PIXEL_COUNT, u32);
     interm_buffer := NewArray(PIXEL_COUNT, Vector3);
 
-    sampling_windows: [SAMPLING_WINDOW_COUNT][]Vector3;
+    sampling_windows  : [SAMPLING_WINDOW_COUNT][]Vector3;
+    backbuffer_windows: [SAMPLING_WINDOW_COUNT][]u32;
 
     current_frame := 0;
-    for *sampling_window, window_index : sampling_windows {
-        sampling_window.data  = interm_buffer.data + window_index * PIXELS_PER_SAMPLING_WINDOW;
-        sampling_window.count = PIXELS_PER_SAMPLING_WINDOW;
+    for window_index : 0..sampling_windows.count-1 {
+        sampling_windows[window_index].data  = interm_buffer.data + window_index * PIXELS_PER_SAMPLING_WINDOW;
+        sampling_windows[window_index].count = PIXELS_PER_SAMPLING_WINDOW;
+
+        backbuffer_windows[window_index].data  = backbuffer.data + window_index * PIXELS_PER_SAMPLING_WINDOW;
+        backbuffer_windows[window_index].count = PIXELS_PER_SAMPLING_WINDOW;
     }
-    sampling_windows[sampling_windows.count-1].count = PIXEL_COUNT - (sampling_windows.count - 1) * PIXELS_PER_SAMPLING_WINDOW;
+    sampling_windows  [  sampling_windows.count-1].count = PIXEL_COUNT - (  sampling_windows.count - 1) * PIXELS_PER_SAMPLING_WINDOW;
+    backbuffer_windows[backbuffer_windows.count-1].count = PIXEL_COUNT - (backbuffer_windows.count - 1) * PIXELS_PER_SAMPLING_WINDOW;
 
     sum := 0;
     for sampling_windows {
-        print("Window.count: %\n", it.count);
+        log_verbose("Window.count: %\n", it.count);
         sum += it.count;
     }
-    print("Windows: %\nSum: %\nTot: %\n", sampling_windows.count, sum, PIXEL_COUNT);
+    log_verbose("Windows: %\nSum: %\nTot: %\n", sampling_windows.count, sum, PIXEL_COUNT);
 
 
     Thread_Synch :: struct {
-        sampling_windows: [][]Vector3;
-        entities        : []Entity;
+          sampling_windows: [][]Vector3;
+        backbuffer_windows: [][]u32;
+        entities          : []Entity;
 
         start_semaphore : Semaphore;
          done_semaphore : Semaphore;
+
+        copy_to_backbuffer := false;
+        sample_count       := 0;
     }
-    thread_synchs := Thread_Synch.{sampling_windows = sampling_windows};
+    thread_synchs := Thread_Synch.{sampling_windows = sampling_windows, backbuffer_windows = backbuffer_windows};
     init(*thread_synchs.start_semaphore);
     init(*thread_synchs. done_semaphore);
 
@@ -79,13 +88,19 @@ main :: () {
 
             current_window_index := thread.index - 1;
             while current_window_index < data.sampling_windows.count {
-                pixel_buffer := data.sampling_windows[current_window_index];
+                defer current_window_index += THREAD_COUNT;
+
+                pixel_buffer := data.  sampling_windows[current_window_index];
+                backbuffer   := data.backbuffer_windows[current_window_index];
 
                 sample_window(current_window_index, pixel_buffer, data.entities);
 
-                current_window_index += THREAD_COUNT;
+                if data.copy_to_backbuffer {
+                    copy_pixels(pixel_buffer, backbuffer, cast(float, data.sample_count));
+                }
             }
 
+            reset_temporary_storage();
             log_verbose("Thread done: %\n", thread.index);
             signal(*data.done_semaphore);
         }
@@ -161,23 +176,22 @@ main :: () {
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
 
     #if TIME {
-       last_t := current_time_monotonic();
-       current_t := last_t;
+       last_t      := current_time_monotonic();
+       current_t   := last_t;
        min_frame_t : float64 = 2000.0;
-       dt_acc    : float64;
+       dt_acc      : float64;
        frame_count := 0;
        FRAME_AVERAGE_AMOUNT :: 10;
-       INV_FRAME_AVERAGE :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
+       INV_FRAME_AVERAGE    :: cast(float64)1.0 / FRAME_AVERAGE_AMOUNT;
     }
-
-    sample_count      := 0;
 
     NUMBER_OF_SAMPLES_BETWEEN_RENDERS :: 2;
     frame_display_countdown := 1;
 
     quit := false;
     while !quit {
-        sample_count += 1;
+        defer reset_temporary_storage();
+
         update_window_events();
 
         for events_this_frame {
@@ -194,7 +208,13 @@ main :: () {
 
         // ===========
 
+        frame_display_countdown -= 1;
+
         {
+            thread_synchs.sample_count      += 1;
+            thread_synchs.copy_to_backbuffer = frame_display_countdown == 0;
+            sfence();
+
             for 0..THREAD_COUNT-1 {
                 signal(*thread_synchs.start_semaphore);
             }
@@ -208,53 +228,13 @@ main :: () {
             log_verbose("All threads are done!");
         }
 
-        frame_display_countdown -= 1;
-
         if frame_display_countdown == 0 {
             frame_display_countdown = NUMBER_OF_SAMPLES_BETWEEN_RENDERS;
 
-            memset(backbuffer.data, 0xcd, size_of(u32) * backbuffer.count);
-
-            interm_pixel := interm_buffer.data;
-            for *pixel: backbuffer {
-                defer interm_pixel += 1;
-
-                linear_to_srgb :: (l: float) -> float #expand {
-                    if l < 0 return 0;
-                    if l > 1 return 1;
-
-                    s := l * 12.92;
-                    if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
-
-                    return s;
-                }
-
-                srgb_pixel : Vector3 = ---;
-
-                denom := 1.0 / cast(float)sample_count;
-                srgb_pixel.x = linear_to_srgb(interm_pixel.x * denom);
-                srgb_pixel.y = linear_to_srgb(interm_pixel.y * denom);
-                srgb_pixel.z = linear_to_srgb(interm_pixel.z * denom);
-
-                r : u32 = cast(u8) (255 * srgb_pixel.x);
-                g : u32 = cast(u8) (255 * srgb_pixel.y);
-                b : u32 = cast(u8) (255 * srgb_pixel.z);
-
-                pixel_value : u32 = 0xFF000000 | (r << 16) | (g << 8) | b; 
-                #if USE_NONTEMPORAL_STORE {
-                    #asm {
-                        movnt.32 [pixel], pixel_value;
-                    }
-                } else {
-                    pixel.* = pixel_value;
-                }
-            }
-
-
-            // ===========
             StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                                      0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                           backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
+            //BitBlt(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, hdcSrc: HDC, x1: s32, y1: s32, rop: ROP) -> BOOL #foreign gdi;
         }
 
         #if TIME {
@@ -375,6 +355,43 @@ sample_pixels :: (start_x: int, start_y: int, pixel_buffer : []Vector3, entities
     }
 }
 
+copy_pixels :: (source_buffer: []Vector3, dest_buffer: []u32, samples_so_far: float) {
+    interm_pixel := source_buffer.data;
+    for *pixel: dest_buffer {
+        defer interm_pixel += 1;
+
+        linear_to_srgb :: (l: float) -> float #expand {
+            if l < 0 return 0;
+            if l > 1 return 1;
+
+            s := l * 12.92;
+            if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+
+            return s;
+        }
+
+        srgb_pixel : Vector3 = ---;
+
+        denom := 1.0 / samples_so_far;
+        srgb_pixel.x = linear_to_srgb(interm_pixel.x * denom);
+        srgb_pixel.y = linear_to_srgb(interm_pixel.y * denom);
+        srgb_pixel.z = linear_to_srgb(interm_pixel.z * denom);
+
+        r : u32 = cast(u8) (255 * srgb_pixel.x);
+        g : u32 = cast(u8) (255 * srgb_pixel.y);
+        b : u32 = cast(u8) (255 * srgb_pixel.z);
+
+        pixel_value : u32 = 0xFF000000 | (r << 16) | (g << 8) | b; 
+        #if USE_NONTEMPORAL_STORE {
+            #asm {
+                movnt.32 [pixel], pixel_value;
+            }
+        } else {
+            pixel.* = pixel_value;
+        }
+    }
+}
+
 ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vector3 = .{}, normal: Vector3 = .{} {
     if e.type == {
         case .SPHERE;
@@ -447,7 +464,7 @@ ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vec
                 }
             }
             return hit_found, impact_dist, impact_point, impact_normal;
-        }
+    }
 
     return false;
 }
@@ -460,6 +477,7 @@ ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vec
 #import "Sloppy_Math";
 #import "Random";
 #import "Thread";
+#import "Machine_X64";
 #import "Print_Vars";
 
 WINDOW_WIDTH  :: 640 * SCALE;
