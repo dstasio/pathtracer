@@ -7,9 +7,25 @@ AA    :: 1;
 USE_NONTEMPORAL_STORE :: false;
 
 #load "entity.jai";
+#load "logger.jai";
+
+PIXEL_COUNT :: WINDOW_WIDTH * WINDOW_HEIGHT;
+
+THREAD_COUNT          :: 8;
+PIXELS_PER_WORK_BLOCK :: 16;
+#assert (PIXELS_PER_WORK_BLOCK * size_of(Vector3)) % 64 == 0;
+
+BLOCK_COUNT       :: #run ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_WORK_BLOCK);
+BLOCKS_PER_THREAD :: cast(int, #run ceil(BLOCK_COUNT / THREAD_COUNT));
+
+PIXELS_PER_SAMPLING_WINDOW :: BLOCKS_PER_THREAD * PIXELS_PER_WORK_BLOCK;
+//PIXELS_PER_SAMPLING_WINDOW :: 512;
+SAMPLING_WINDOW_COUNT      :: #run cast(int, ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_SAMPLING_WINDOW));
+
 
 main :: () {
     #assert(OS == .WINDOWS);
+    context.logger = my_logger;
 
     the_window = create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "Pathtracer");
 
@@ -24,20 +40,8 @@ main :: () {
     backbuffer_info.bmiHeader.biCompression = BI_RGB;
 
     // format: 0xAARRGGBB
-    PIXEL_COUNT :: WINDOW_WIDTH * WINDOW_HEIGHT;
     backbuffer    := NewArray(PIXEL_COUNT, u32);
     interm_buffer := NewArray(PIXEL_COUNT, Vector3);
-
-    THREAD_COUNT          :: 8;
-    PIXELS_PER_WORK_BLOCK :: 16;
-    #assert (PIXELS_PER_WORK_BLOCK * size_of(Vector3)) % 64 == 0;
-
-    BLOCK_COUNT       :: #run ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_WORK_BLOCK);
-    BLOCKS_PER_THREAD :: cast(int, #run ceil(BLOCK_COUNT / THREAD_COUNT));
-
-    PIXELS_PER_SAMPLING_WINDOW :: BLOCKS_PER_THREAD * PIXELS_PER_WORK_BLOCK;
-    //PIXELS_PER_SAMPLING_WINDOW :: 512;
-    SAMPLING_WINDOW_COUNT      :: #run cast(int, ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_SAMPLING_WINDOW));
 
     sampling_windows: [SAMPLING_WINDOW_COUNT][]Vector3;
 
@@ -55,6 +59,46 @@ main :: () {
     }
     print("Windows: %\nSum: %\nTot: %\n", sampling_windows.count, sum, PIXEL_COUNT);
 
+
+    Thread_Synch :: struct {
+        sampling_windows: [][]Vector3;
+        entities        : []Entity;
+
+        start_semaphore : Semaphore;
+         done_semaphore : Semaphore;
+    }
+    thread_synchs := Thread_Synch.{sampling_windows = sampling_windows};
+    init(*thread_synchs.start_semaphore);
+    init(*thread_synchs. done_semaphore);
+
+    thread_proc :: (thread: *Thread) -> s64 {
+        data := cast(*Thread_Synch)thread.data;
+
+        while true {
+            wait_for(*data.start_semaphore);
+
+            current_window_index := thread.index - 1;
+            while current_window_index < data.sampling_windows.count {
+                pixel_buffer := data.sampling_windows[current_window_index];
+
+                sample_window(current_window_index, pixel_buffer, data.entities);
+
+                current_window_index += THREAD_COUNT;
+            }
+
+            log_verbose("Thread done: %\n", thread.index);
+            signal(*data.done_semaphore);
+        }
+
+        return 0;
+    }
+
+    threads: [THREAD_COUNT]Thread;
+    for *threads {
+        it.data = *thread_synchs;
+        thread_init(it, thread_proc);
+        thread_start(it);
+    }
 
     S :: 0.5;
 
@@ -112,6 +156,7 @@ main :: () {
         .{ type = .SPHERE, sphere = .{ .{  50,  30, 50 },  7}, material_index = 4 },
         .{ type = .  MESH,   mesh =                      cube, material_index = 2 },
     ];
+    thread_synchs.entities = entities;
 
     light_dir :: #run normalize(Vector3.{0.3, 1, -0.7});
 
@@ -149,17 +194,18 @@ main :: () {
 
         // ===========
 
-        window_start_x := 0;
-        window_start_y := 0;
-        for sampling_windows {
-            //log("Sampling % out of %\n", it_index, sampling_windows.count);
-            sample_pixels(window_start_x, window_start_y, it, entities);
-
-            window_start_x += it.count;
-            while window_start_x >= WINDOW_WIDTH {
-                window_start_x -= WINDOW_WIDTH;
-                window_start_y += 1;
+        {
+            for 0..THREAD_COUNT-1 {
+                signal(*thread_synchs.start_semaphore);
             }
+
+            log_verbose("All threads have started...");
+
+            for 0..THREAD_COUNT-1 {
+                wait_for(*thread_synchs.done_semaphore);
+            }
+
+            log_verbose("All threads are done!");
         }
 
         frame_display_countdown -= 1;
@@ -229,6 +275,15 @@ main :: () {
             }
         }
     }
+}
+
+sample_window :: (window_index: int, window: []Vector3, entities: []Entity) {
+    window_start_x := PIXELS_PER_SAMPLING_WINDOW * window_index;
+    window_start_y := window_start_x / WINDOW_WIDTH;
+    window_start_x -= window_start_y * WINDOW_WIDTH;
+
+    //log("Sampling % out of %\n", window_index, sampling_windows.count);
+    sample_pixels(window_start_x, window_start_y, window, entities);
 }
 
 sample_pixels :: (start_x: int, start_y: int, pixel_buffer : []Vector3, entities : []Entity) {
@@ -404,6 +459,7 @@ ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vec
 #import "Math";
 #import "Sloppy_Math";
 #import "Random";
+#import "Thread";
 #import "Print_Vars";
 
 WINDOW_WIDTH  :: 640 * SCALE;
