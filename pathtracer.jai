@@ -1,4 +1,4 @@
-// Compiler Version 0.2.006
+// Compiler Version 0.2.008
 
 SCALE :: 2;
 TIME  :: 1;
@@ -24,8 +24,37 @@ main :: () {
     backbuffer_info.bmiHeader.biCompression = BI_RGB;
 
     // format: 0xAARRGGBB
-    backbuffer    := NewArray(WINDOW_WIDTH * WINDOW_HEIGHT, u32);
-    interm_buffer := NewArray(WINDOW_WIDTH * WINDOW_HEIGHT, Vector3);
+    PIXEL_COUNT :: WINDOW_WIDTH * WINDOW_HEIGHT;
+    backbuffer    := NewArray(PIXEL_COUNT, u32);
+    interm_buffer := NewArray(PIXEL_COUNT, Vector3);
+
+    THREAD_COUNT          :: 8;
+    PIXELS_PER_WORK_BLOCK :: 16;
+    #assert (PIXELS_PER_WORK_BLOCK * size_of(Vector3)) % 64 == 0;
+
+    BLOCK_COUNT       :: #run ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_WORK_BLOCK);
+    BLOCKS_PER_THREAD :: cast(int, #run ceil(BLOCK_COUNT / THREAD_COUNT));
+
+    PIXELS_PER_SAMPLING_WINDOW :: BLOCKS_PER_THREAD * PIXELS_PER_WORK_BLOCK;
+    //PIXELS_PER_SAMPLING_WINDOW :: 512;
+    SAMPLING_WINDOW_COUNT      :: #run cast(int, ceil(cast(float, PIXEL_COUNT) / PIXELS_PER_SAMPLING_WINDOW));
+
+    sampling_windows: [SAMPLING_WINDOW_COUNT][]Vector3;
+
+    current_frame := 0;
+    for *sampling_window, window_index : sampling_windows {
+        sampling_window.data  = interm_buffer.data + window_index * PIXELS_PER_SAMPLING_WINDOW;
+        sampling_window.count = PIXELS_PER_SAMPLING_WINDOW;
+    }
+    sampling_windows[sampling_windows.count-1].count = PIXEL_COUNT - (sampling_windows.count - 1) * PIXELS_PER_SAMPLING_WINDOW;
+
+    sum := 0;
+    for sampling_windows {
+        print("Window.count: %\n", it.count);
+        sum += it.count;
+    }
+    print("Windows: %\nSum: %\nTot: %\n", sampling_windows.count, sum, PIXEL_COUNT);
+
 
     S :: 0.5;
 
@@ -120,7 +149,18 @@ main :: () {
 
         // ===========
 
-        sample_pixels(interm_buffer, entities);
+        window_start_x := 0;
+        window_start_y := 0;
+        for sampling_windows {
+            //log("Sampling % out of %\n", it_index, sampling_windows.count);
+            sample_pixels(window_start_x, window_start_y, it, entities);
+
+            window_start_x += it.count;
+            while window_start_x >= WINDOW_WIDTH {
+                window_start_x -= WINDOW_WIDTH;
+                window_start_y += 1;
+            }
+        }
 
         frame_display_countdown -= 1;
 
@@ -184,22 +224,21 @@ main :: () {
             if frame_count >= FRAME_AVERAGE_AMOUNT {
                 frame_count = 0;
                 dt_acc *= INV_FRAME_AVERAGE;
-                print("Average frame time: %;  FPS: %;   Min frame time: %\n", dt_acc, 1.0 / cast(float)dt_acc, min_frame_t);
+                log("Average frame time: %;  FPS: %;   Min frame time: %\n", dt_acc, 1.0 / cast(float)dt_acc, min_frame_t);
                 dt_acc = 0;
             }
         }
     }
 }
 
-sample_pixels :: (pixel_buffer : []Vector3, entities : []Entity) {
-    x : u32;
-    y : u32;
+sample_pixels :: (start_x: int, start_y: int, pixel_buffer : []Vector3, entities : []Entity) {
+    x, y := cast(u32, start_x), cast(u32, start_y);
     for *interm_pixel: pixel_buffer {
 
         defer { x += 1; if x == WINDOW_WIDTH { y += 1; x  = 0; } }
 
-        fx := cast(float)x;
-        fy := cast(float)y;
+        fx := cast(float, x);
+        fy := cast(float, y);
 
         #if AA {
             fx += random_get_zero_to_one();
@@ -365,6 +404,7 @@ ray_to_entity :: (r: Ray, e: Entity) -> hit: bool, dist: float = -1, impact: Vec
 #import "Math";
 #import "Sloppy_Math";
 #import "Random";
+#import "Print_Vars";
 
 WINDOW_WIDTH  :: 640 * SCALE;
 WINDOW_HEIGHT :: 360 * SCALE;
