@@ -5,6 +5,7 @@ TIME  :: 1;
 AA    :: 1;
 
 USE_NONTEMPORAL_STORE :: false;
+SIMD :: true;
 
 #load "entity.jai";
 #load "logger.jai";
@@ -234,7 +235,6 @@ main :: () {
             StretchDIBits(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                                      0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
                           backbuffer.data, *backbuffer_info, DIB_RGB_COLORS, .SRCCOPY);
-            //BitBlt(window_dc, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, hdcSrc: HDC, x1: s32, y1: s32, rop: ROP) -> BOOL #foreign gdi;
         }
 
         #if TIME {
@@ -356,38 +356,91 @@ sample_pixels :: (start_x: int, start_y: int, pixel_buffer : []Vector3, entities
 }
 
 copy_pixels :: (source_buffer: []Vector3, dest_buffer: []u32, samples_so_far: float) {
-    interm_pixel := source_buffer.data;
-    for *pixel: dest_buffer {
-        defer interm_pixel += 1;
+    #if SIMD {
+        pixel_index := 0;
 
-        linear_to_srgb :: (l: float) -> float #expand {
-            if l < 0 return 0;
-            if l > 1 return 1;
+        while pixel_index < dest_buffer.count-1 {
+            defer pixel_index += 2;
 
-            s := l * 12.92;
-            if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+             src_pixel := source_buffer.data + pixel_index;
+            dest_pixel :=   dest_buffer.data + pixel_index;
 
-            return s;
-        }
+            denoms : [8]float = ---;
+            denoms[0] = 1.0 / samples_so_far;
+            denoms[1] = denoms[0];
+            denoms[2] = denoms[0];
+            denoms[3] = denoms[0];
+            denoms[4] = denoms[0];
+            denoms[5] = denoms[0];
+            denoms[6] = denoms[0];
+            denoms[7] = denoms[0];
+            denoms_data := denoms.data;
 
-        srgb_pixel : Vector3 = ---;
+            #asm AVX, AVX2 {
+                // @speed: Could use movaps here, if we pad the RGB values into a Vector4...
+                movups.256 packed_denom     :, [denoms_data];
+                movups.256 packed_src_pixels:, [src_pixel];
 
-        denom := 1.0 / samples_so_far;
-        srgb_pixel.x = linear_to_srgb(interm_pixel.x * denom);
-        srgb_pixel.y = linear_to_srgb(interm_pixel.y * denom);
-        srgb_pixel.z = linear_to_srgb(interm_pixel.z * denom);
-
-        r : u32 = cast(u8) (255 * srgb_pixel.x);
-        g : u32 = cast(u8) (255 * srgb_pixel.y);
-        b : u32 = cast(u8) (255 * srgb_pixel.z);
-
-        pixel_value : u32 = 0xFF000000 | (r << 16) | (g << 8) | b; 
-        #if USE_NONTEMPORAL_STORE {
-            #asm {
-                movnt.32 [pixel], pixel_value;
+                mulps.256 packed_src_pixels, packed_src_pixels, packed_denom;
             }
-        } else {
-            pixel.* = pixel_value;
+
+            denoms[0], denoms[1], denoms[2], denoms[3], denoms[4], denoms[5], denoms[6], denoms[7] = 512.0;
+
+            u8_masks : [8]u32 = ---;
+            u8_masks[0], u8_masks[1], u8_masks[2], u8_masks[3], u8_masks[4], u8_masks[5], u8_masks[6], u8_masks[7] = 0xFF;
+            u8_masks_data := u8_masks.data;
+
+            results: [8]u32 = ---;
+            results_data := results.data;
+            #asm AVX, AVX2 {
+                movups.256 packed_denom, [denoms_data];
+
+                mulps.256 packed_src_pixels, packed_src_pixels, packed_denom;
+                cvtps2dq.256 packed_int_pixels:, packed_src_pixels; // convert floats to s32's
+
+                pand.256   packed_int_pixels, packed_int_pixels, [u8_masks_data];
+
+                movups.256 [results_data], packed_int_pixels;
+            }
+
+            dest_pixel[0] = (results[2] << 0) | (results[3] << 8) | (results[4] << 16);
+            dest_pixel[1] = (results[5] << 0) | (results[6] << 8) | (results[7] << 16);
+        }
+    } else {
+        src_pixel := source_buffer.data;
+        denom := 1.0 / samples_so_far;
+        for *dest_pixel: dest_buffer {
+            defer src_pixel += 1;
+
+            linear_to_srgb :: (l: float) -> float #expand {
+                return l;
+                if l < 0 return 0;
+                if l > 1 return 1;
+
+                s := l * 12.92;
+                if l > 0.0031308 then s = 1.055 * pow(l, 1 / 2.4) - 0.055;
+
+                return s;
+            }
+
+            srgb_pixel : Vector3 = ---;
+
+            srgb_pixel.x = linear_to_srgb(src_pixel.x * denom);
+            srgb_pixel.y = linear_to_srgb(src_pixel.y * denom);
+            srgb_pixel.z = linear_to_srgb(src_pixel.z * denom);
+
+            r : u32 = cast(u8) (255 * srgb_pixel.x);
+            g : u32 = cast(u8) (255 * srgb_pixel.y);
+            b : u32 = cast(u8) (255 * srgb_pixel.z);
+
+            pixel_value : u32 = 0xFF000000 | (r << 16) | (g << 8) | b; 
+            #if USE_NONTEMPORAL_STORE {
+                #asm {
+                    movnt.32 [dest_pixel], pixel_value;
+                }
+            } else {
+                dest_pixel.* = pixel_value;
+            }
         }
     }
 }
